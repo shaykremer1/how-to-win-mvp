@@ -1,0 +1,8 @@
+# Python 3.11+ (set on Render: PYTHON_VERSION=3.11.8 or use render.yaml)
+fastapi==0.115.8
+uvicorn[standard]==0.34.0
+pydantic==2.10.6
+pandas==2.2.3
+psycopg2-binary==2.9.10
+requests==2.32.3
+beautifulsoup4==4.12.3
