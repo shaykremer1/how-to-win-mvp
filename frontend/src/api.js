@@ -4,32 +4,59 @@ function normalizeApiBase(v) {
   return s || "/api";
 }
 
-export const API_BASE = normalizeApiBase(import.meta.env.VITE_API_BASE);
+const API_BASE_RAW = import.meta.env.VITE_API_BASE || import.meta.env.VITE_BACKEND_URL || "";
+export const API_BASE = normalizeApiBase(API_BASE_RAW);
+export const API_BASE_SOURCE = API_BASE_RAW ? "env" : "default";
 
-async function safeFetch(url, options) {
+async function safeFetch(url, options, timeoutMs = 15000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, options);
+    return await fetch(url, { ...(options || {}), signal: controller.signal });
   } catch (e) {
+    if (e?.name === "AbortError") {
+      throw new Error(`Request timeout after ${timeoutMs}ms: ${url}`);
+    }
     throw new Error(`Network error calling ${url}: ${e.message}`);
+  } finally {
+    clearTimeout(timeout);
   }
+}
+
+async function fetchJsonWithDebug(url, options = {}, label = "request") {
+  const res = await safeFetch(url, options);
+  const text = await res.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch (_) {
+    json = null;
+  }
+
+  console.debug(`[API:${label}]`, { url, status: res.status, ok: res.ok, bodyPreview: text.slice(0, 400) });
+  if (!res.ok) {
+    throw new Error(
+      `Failed ${label} (${res.status}) from ${url}. ` +
+        (text ? `Response: ${text.slice(0, 300)}` : "No response body.")
+    );
+  }
+  if (json == null) {
+    throw new Error(`Invalid JSON response from ${url}`);
+  }
+  return json;
 }
 
 export async function fetchMatches() {
   const url = `${API_BASE}/matches`;
-  const res = await safeFetch(url);
-  if (!res.ok) {
-    throw new Error(`Failed to load matches (${res.status}) from ${url}`);
-  }
-  return res.json();
+  return fetchJsonWithDebug(url, {}, "matches");
 }
 
 export async function fetchOpponents() {
-  const url = `${API_BASE}/opponents`;
-  const res = await safeFetch(url);
-  if (!res.ok) {
-    throw new Error(`Failed to load opponents (${res.status}) from ${url}`);
+  if (API_BASE === "/api" && typeof window !== "undefined" && window.location.hostname.includes("vercel.app")) {
+    console.warn("[API] Running on Vercel with default /api base; set VITE_API_BASE to your backend URL.");
   }
-  return res.json();
+  const url = `${API_BASE}/opponents`;
+  return fetchJsonWithDebug(url, {}, "opponents");
 }
 
 export async function fetchLiveRecommendation(payload) {

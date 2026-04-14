@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { fetchOpponents } from "../api";
+import { API_BASE, API_BASE_SOURCE, fetchMatches, fetchOpponents } from "../api";
 
 const MatchContext = createContext(null);
 
@@ -61,11 +61,34 @@ export function MatchProvider({ children }) {
   const [selectedOpponentKey, setSelectedOpponentKey] = useState("");
   const [matchesStatus, setMatchesStatus] = useState("idle");
   const [matchesError, setMatchesError] = useState("");
+  const [opponentsRawResponse, setOpponentsRawResponse] = useState(null);
+  const [opponentsFetchMeta, setOpponentsFetchMeta] = useState(null);
+  const [matchesProbe, setMatchesProbe] = useState({ status: "idle", count: 0, error: "" });
 
   useEffect(() => {
     setMatchesStatus("loading");
+    setMatchesError("");
+    setOpponentsRawResponse(null);
+    setOpponentsFetchMeta({
+      api_base: API_BASE,
+      api_base_source: API_BASE_SOURCE,
+      opponents_url: `${API_BASE}/opponents`,
+      matches_url: `${API_BASE}/matches`,
+      host: typeof window !== "undefined" ? window.location.host : "",
+    });
+
+    setMatchesProbe({ status: "loading", count: 0, error: "" });
+    fetchMatches()
+      .then((rows) => {
+        setMatchesProbe({ status: "success", count: Array.isArray(rows) ? rows.length : 0, error: "" });
+      })
+      .catch((e) => {
+        setMatchesProbe({ status: "error", count: 0, error: e.message });
+      });
+
     fetchOpponents()
       .then((data) => {
+        setOpponentsRawResponse(data);
         const normalized = normalizeOpponentsResponse(data);
         if (!normalized.length && Array.isArray(data) && data.length > 0) {
           setOpponents([]);
@@ -83,6 +106,7 @@ export function MatchProvider({ children }) {
         setOpponents([]);
         setMatchesStatus("error");
         setMatchesError(e.message);
+        setOpponentsRawResponse({ error: e.message });
       });
   }, []);
 
@@ -102,8 +126,21 @@ export function MatchProvider({ children }) {
       selectedMatchId,
       matchesStatus,
       matchesError,
+      opponentsRawResponse,
+      opponentsFetchMeta,
+      matchesProbe,
     }),
-    [opponents, selectedOpponentKey, selectedOpponent, selectedMatchId, matchesStatus, matchesError]
+    [
+      opponents,
+      selectedOpponentKey,
+      selectedOpponent,
+      selectedMatchId,
+      matchesStatus,
+      matchesError,
+      opponentsRawResponse,
+      opponentsFetchMeta,
+      matchesProbe,
+    ]
   );
 
   return <MatchContext.Provider value={value}>{children}</MatchContext.Provider>;

@@ -18,6 +18,9 @@ export default function AppShell() {
     selectedOpponent,
     matchesStatus,
     matchesError,
+    opponentsRawResponse,
+    opponentsFetchMeta,
+    matchesProbe,
   } = useMatchContext();
 
   return (
@@ -44,7 +47,22 @@ export default function AppShell() {
         <div className="debug-line">Matches status: {matchesStatus}</div>
         <div className="debug-line">Selected opponent: {selectedOpponent?.opponent_name || "none"}</div>
         <div className="debug-line">Sample games: {selectedOpponent?.sample_match_count || 0}</div>
+        <div className="debug-line">API base: {opponentsFetchMeta?.api_base || "n/a"}</div>
+        <div className="debug-line">API source: {opponentsFetchMeta?.api_base_source || "n/a"}</div>
+        <div className="debug-line">Probe /matches: {matchesProbe?.status || "idle"} ({matchesProbe?.count || 0})</div>
+        {matchesProbe?.error ? <div className="error">Matches probe error: {matchesProbe.error}</div> : null}
         {matchesError ? <div className="error">{matchesError}</div> : null}
+        {opponentsFetchMeta ? (
+          <div className="debug-line">Opponents URL: {opponentsFetchMeta.opponents_url}</div>
+        ) : null}
+        {opponentsRawResponse ? (
+          <details className="debug-panel" style={{ marginTop: 10 }}>
+            <summary className="debug-title">Raw opponents response</summary>
+            <pre className="debug-line" style={{ whiteSpace: "pre-wrap", margin: 0 }}>
+              {JSON.stringify(opponentsRawResponse, null, 2)}
+            </pre>
+          </details>
+        ) : null}
         {selectedOpponent ? (
           <div className="history-panel">
             <h3 className="section-subtitle">Previous games vs {selectedOpponent.opponent_name}</h3>
