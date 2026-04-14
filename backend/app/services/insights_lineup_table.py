@@ -265,8 +265,10 @@ def compute_lineup_table(
             pf = float(pts_for.get(key, 0.0))
             pa = float(pts_against.get(key, 0.0))
         else:
-            pf = None
-            pa = None
+            # Fallback when no pbp_debug files exist for this scope:
+            # keep table non-empty with a deterministic proxy derived from +/-.
+            pf = float(max(diff_total, 0.0))
+            pa = float(max(-diff_total, 0.0))
 
         rows_out.append(
             LineupTableRowOut(

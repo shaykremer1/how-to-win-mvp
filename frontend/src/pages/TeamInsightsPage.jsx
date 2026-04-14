@@ -290,7 +290,7 @@ export default function TeamInsightsPage() {
         </p>
         {!data?.lineup_table_pbp_available && lineupRowsRaw.length ? (
           <p className="probe">
-            PBP files missing for this scope — minutes, +/-, and EFF still shown; PTS / OPP / FGA are unavailable.
+            PBP files missing for this scope — PTS/OPP are shown as +/- based proxy values.
           </p>
         ) : null}
         {lineupRowsRaw.length ? (
