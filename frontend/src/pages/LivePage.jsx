@@ -320,7 +320,7 @@ export default function LivePage() {
               <div>
                 Overlap quality: {result.overlap_label || `${result.overlap}/${result.input_n}`}
               </div>
-              <div>Availability tier used: {result.available_in_chosen_lineup}/5</div>
+              <div>Returned lineup availability: {result.available_in_chosen_lineup}/5 selected players</div>
               {result.used_fallback ? (
                 <div className="warn-text">
                   Recommendation uses closest observed opponent lineup fallback.
@@ -329,6 +329,23 @@ export default function LivePage() {
               {result.availability_rule && result.availability_rule !== "full_5_of_5" ? (
                 <div className="warn-text">
                   No fully available historical lineup; recommendation uses closest playable availability fallback.
+                </div>
+              ) : null}
+              {Array.isArray(result?.debug?.selected_available_numbers) ? (
+                <div>Selected available players: {result.debug.selected_available_numbers.join(", ") || "-"}</div>
+              ) : null}
+              {Array.isArray(result?.debug?.returned_lineups) && result.debug.returned_lineups.length ? (
+                <div>
+                  Returned lineup key: {result.debug.returned_lineups[0]?.returned_lineup || "-"}
+                  {Array.isArray(result.debug.returned_lineups[0]?.replacements) &&
+                  result.debug.returned_lineups[0].replacements.length ? (
+                    <>
+                      {" | replacements: "}
+                      {result.debug.returned_lineups[0].replacements
+                        .map((r) => `${r.replaced_unavailable_player}->${r.replacement_player ?? "-"}`)
+                        .join(", ")}
+                    </>
+                  ) : null}
                 </div>
               ) : null}
             </div>

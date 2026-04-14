@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 from backend.app.core.db import run_query
 from backend.app.schemas.common import LineupCardOut
 from backend.app.schemas.live import LiveRecommendationIn, LiveRecommendationOut
@@ -58,14 +60,73 @@ def _minimum_reasonable_overlap(input_n: int) -> int:
     return max(1, input_n)
 
 
-def _availability_label(available_count: int) -> tuple[str, str]:
-    if available_count >= 5:
-        return "Fully available lineup (5/5)", "full_5_of_5"
-    if available_count == 4:
-        return "Closest playable lineup (4/5)", "fallback_4_of_5"
-    if available_count == 3:
-        return "Partial fallback lineup (3/5)", "fallback_3_of_5"
-    return f"Low-availability lineup ({available_count}/5)", "low_availability"
+def _availability_label(used_synthetic: bool, replaced_count: int) -> tuple[str, str]:
+    if not used_synthetic:
+        return "Fully available lineup (all 5 selected)", "full_5_of_5"
+    if replaced_count <= 1:
+        return "Closest playable lineup (1 replacement)", "fallback_replaced_1"
+    return f"Partial fallback lineup ({replaced_count} replacements)", "fallback_replaced_multi"
+
+
+def _lineup_key_from_players(players: list[int] | set[int]) -> str:
+    xs = sorted({int(x) for x in players if int(x) > 0})
+    return "-".join(str(x) for x in xs)
+
+
+def _compute_available_player_scores(chosen_rows, selected_available_set: set[int]) -> dict[int, float]:
+    sec_sum: dict[int, int] = defaultdict(int)
+    diff_sum: dict[int, float] = defaultdict(float)
+    for _, row in chosen_rows.iterrows():
+        sec = int(row.get("time_played_seconds") or 0)
+        diff = float(row.get("diff") or 0.0)
+        players = _parse_lineup_players(row.get("a_lineup_key"))
+        for p in players:
+            if p in selected_available_set:
+                sec_sum[p] += sec
+                diff_sum[p] += diff
+    scores: dict[int, float] = {}
+    for p in selected_available_set:
+        s = sec_sum.get(p, 0)
+        scores[p] = (diff_sum.get(p, 0.0) / s) * 60.0 if s > 0 else 0.0
+    return scores
+
+
+def _synthesize_playable_lineup(
+    players_set: set[int],
+    selected_available_set: set[int],
+    player_scores: dict[int, float],
+    prefer_best: bool,
+) -> tuple[str, list[int], list[dict], list[int]]:
+    kept = sorted(players_set & selected_available_set)
+    unavailable = sorted(players_set - selected_available_set)
+
+    needed = max(0, 5 - len(kept))
+    pool = sorted(selected_available_set - set(kept))
+    if prefer_best:
+        ranked = sorted(pool, key=lambda p: (-player_scores.get(p, 0.0), p))
+    else:
+        ranked = sorted(pool, key=lambda p: (player_scores.get(p, 0.0), p))
+
+    substitutes = ranked[:needed]
+    final_players = sorted(set(kept) | set(substitutes))
+    if len(final_players) < 5:
+        for p in ranked[needed:]:
+            if p not in final_players:
+                final_players.append(p)
+            if len(final_players) >= 5:
+                break
+        final_players = sorted(final_players)
+
+    replacements = []
+    for i, out_p in enumerate(unavailable):
+        replacements.append(
+            {
+                "replaced_unavailable_player": int(out_p),
+                "replacement_player": int(substitutes[i]) if i < len(substitutes) else None,
+            }
+        )
+
+    return _lineup_key_from_players(final_players), final_players, replacements, unavailable
 
 
 def get_available_players(match_id: int) -> dict:
@@ -300,22 +361,17 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
         a_agg["players_set"] = a_agg["a_lineup_key"].apply(_parse_lineup_players)
         a_agg["available_count"] = a_agg["players_set"].apply(lambda s: len(s & selected_available_set))
         a_agg["unavailable_players"] = a_agg["players_set"].apply(lambda s: sorted(list(s - selected_available_set)))
+        a_agg["playable_full"] = a_agg["players_set"].apply(lambda s: s.issubset(selected_available_set))
 
-    # Availability fallback tiers: 5/5 -> 4/5 -> 3/5
-    tier_rows = a_agg[a_agg["available_count"] >= 5].copy() if not a_agg.empty else a_agg
-    selected_availability_tier = 5
-    if tier_rows.empty:
-        tier_rows = a_agg[a_agg["available_count"] >= 4].copy() if not a_agg.empty else a_agg
-        selected_availability_tier = 4
-    if tier_rows.empty:
-        tier_rows = a_agg[a_agg["available_count"] >= 3].copy() if not a_agg.empty else a_agg
-        selected_availability_tier = 3
+    full_rows = a_agg[a_agg["playable_full"]].copy() if not a_agg.empty else a_agg
+    fallback_rows = a_agg[a_agg["available_count"] >= 3].copy() if not a_agg.empty else a_agg
 
     debug_info["rejection_summary"]["below_availability_tier"] = int(
-        max(len(a_agg) - len(tier_rows), 0)
+        max(len(a_agg) - len(fallback_rows), 0)
     )
+    debug_info["rejection_summary"]["not_fully_playable"] = int(max(len(a_agg) - len(full_rows), 0))
 
-    if a_agg.empty or tier_rows.empty:
+    if a_agg.empty or fallback_rows.empty:
         quality_label, used_fallback = _overlap_label(overlap, input_n)
         return LiveRecommendationOut(
             selected_match_id=payload.match_id,
@@ -341,36 +397,82 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
             not_recommended=None,
         )
 
-    tier_rows["diff_per_min"] = tier_rows.apply(
+    source_rows = full_rows if not full_rows.empty else fallback_rows
+    source_rows = source_rows.copy()
+    source_rows["diff_per_min"] = source_rows.apply(
         lambda r: (float(r["total_diff"]) / float(r["total_seconds"])) * 60.0 if float(r["total_seconds"]) > 0 else 0.0,
         axis=1,
     )
-    tier_rows = tier_rows.sort_values(
+    source_rows = source_rows.sort_values(
         ["diff_per_min", "total_seconds", "a_lineup_key"], ascending=[False, False, True]
     )
+    use_synthetic = full_rows.empty
+    player_scores = _compute_available_player_scores(chosen_rows, selected_available_set)
+
     quality_label, used_fallback = _overlap_label(overlap, input_n)
-    availability_label, availability_rule = _availability_label(selected_availability_tier)
-    best_row = tier_rows.iloc[0]
-    unavailable_players = [int(x) for x in (best_row["unavailable_players"] or [])]
-    debug_info["selected_availability_tier"] = selected_availability_tier
+    best_row = source_rows.iloc[0]
+    if use_synthetic:
+        best_lineup_key, _, best_replacements, unavailable_players = _synthesize_playable_lineup(
+            set(best_row["players_set"]),
+            selected_available_set,
+            player_scores,
+            prefer_best=True,
+        )
+    else:
+        best_lineup_key = str(best_row["a_lineup_key"])
+        best_replacements = []
+        unavailable_players = []
+    availability_label, availability_rule = _availability_label(use_synthetic, len(unavailable_players))
     debug_info["selected_unavailable_players"] = unavailable_players
+    debug_info["chosen_replacements"] = best_replacements
 
     recommendations = []
-    for _, row in tier_rows.head(3).iterrows():
+    returned_lineups_debug = []
+    for _, row in source_rows.head(3).iterrows():
+        if use_synthetic:
+            out_key, _, replacements, row_unavail = _synthesize_playable_lineup(
+                set(row["players_set"]),
+                selected_available_set,
+                player_scores,
+                prefer_best=True,
+            )
+        else:
+            out_key = str(row["a_lineup_key"])
+            replacements = []
+            row_unavail = []
         recommendations.append(
             LineupCardOut(
-                lineup=format_lineup(str(row["a_lineup_key"]), payload.display_mode),
+                lineup=format_lineup(out_key, payload.display_mode),
                 diff_total=float(row["total_diff"]),
                 diff_per_min=float(row["diff_per_min"]),
                 minutes=float(row["total_seconds"]) / 60.0,
             )
         )
+        returned_lineups_debug.append(
+            {
+                "historical_lineup": str(row["a_lineup_key"]),
+                "returned_lineup": out_key,
+                "unavailable_historical_players": [int(x) for x in row_unavail],
+                "replacements": replacements,
+            }
+        )
+    debug_info["returned_lineups"] = returned_lineups_debug
 
     not_recommended = None
-    if not tier_rows.empty:
-        worst = tier_rows.sort_values(["diff_per_min", "total_seconds", "a_lineup_key"], ascending=[True, False, True]).iloc[0]
+    if not source_rows.empty:
+        worst = source_rows.sort_values(["diff_per_min", "total_seconds", "a_lineup_key"], ascending=[True, False, True]).iloc[0]
+        if use_synthetic:
+            worst_key, _, worst_replacements, _ = _synthesize_playable_lineup(
+                set(worst["players_set"]),
+                selected_available_set,
+                player_scores,
+                prefer_best=False,
+            )
+            debug_info["bad_lineup_replacements"] = worst_replacements
+        else:
+            worst_key = str(worst["a_lineup_key"])
         not_recommended = LineupCardOut(
-            lineup=format_lineup(str(worst["a_lineup_key"]), payload.display_mode),
+            lineup=format_lineup(worst_key, payload.display_mode),
             diff_total=float(worst["total_diff"]),
             diff_per_min=float(worst["diff_per_min"]),
             minutes=float(worst["total_seconds"]) / 60.0,
@@ -390,7 +492,7 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
         used_fallback=used_fallback,
         availability_label=availability_label,
         availability_rule=availability_rule,
-        available_in_chosen_lineup=selected_availability_tier,
+        available_in_chosen_lineup=5 if recommendations else 0,
         unavailable_historical_players=unavailable_players,
         debug=debug_info,
         recommendations=recommendations,
