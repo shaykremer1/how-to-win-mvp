@@ -5,7 +5,7 @@ from backend.app.schemas.common import LineupCardOut
 from backend.app.schemas.training import OpponentLineupsOut, ResponseVsLineupOut, TrainingOverviewOut
 from backend.app.services.common import extract_opponent_from_match_name, format_lineup, get_related_match_ids
 from backend.app.services.matches import fetch_matches_for_dropdown
-from queries import ALL_B_AGG_SQL, BEST_A_OVERALL_SQL, VS_B_RESPONSES_SQL
+from backend.app.core.queries import ALL_B_AGG_SQL, BEST_A_OVERALL_SQL, VS_B_RESPONSES_SQL
 
 logger = logging.getLogger(__name__)
 

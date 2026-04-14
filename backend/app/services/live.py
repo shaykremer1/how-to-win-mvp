@@ -3,7 +3,7 @@ from backend.app.schemas.common import LineupCardOut
 from backend.app.schemas.live import LiveRecommendationIn, LiveRecommendationOut
 from backend.app.services.common import PLAYER_MAP, extract_opponent_from_match_name, format_lineup, get_related_match_ids
 from backend.app.services.matches import fetch_matches_for_dropdown
-from queries import RECO_SQL
+from backend.app.core.queries import RECO_SQL
 
 
 def get_available_players(match_id: int) -> dict:

@@ -4,7 +4,7 @@ from backend.app.schemas.insights import MatchupInsightOut, TeamInsightsOut
 from backend.app.services.common import format_lineup, get_related_match_ids
 from backend.app.services.insights_lineup_table import compute_lineup_table, resolve_lineup_match_scope
 from backend.app.services.matches import fetch_matches_for_dropdown
-from queries import ALL_B_AGG_SQL, BEST_A_OVERALL_SQL
+from backend.app.core.queries import ALL_B_AGG_SQL, BEST_A_OVERALL_SQL
 
 
 def get_team_insights(
