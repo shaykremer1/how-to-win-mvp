@@ -23,5 +23,6 @@ class LiveRecommendationOut(BaseModel):
     input_n: int
     overlap_label: str | None = None
     used_fallback: bool = False
+    debug: dict | None = None
     recommendations: list[LineupCardOut]
     not_recommended: LineupCardOut | None = None

@@ -3,7 +3,6 @@ from backend.app.schemas.common import LineupCardOut
 from backend.app.schemas.live import LiveRecommendationIn, LiveRecommendationOut
 from backend.app.services.common import PLAYER_MAP, extract_opponent_from_match_name, format_lineup, get_related_match_ids
 from backend.app.services.matches import fetch_matches_for_dropdown
-from backend.app.core.queries import RECO_SQL
 
 
 def _overlap_label(overlap: int, input_n: int) -> tuple[str, bool]:
@@ -20,6 +19,43 @@ def _overlap_label(overlap: int, input_n: int) -> tuple[str, bool]:
     if input_n == 5 and overlap == 3:
         return "Closest match (3/5)", True
     return f"Closest match ({overlap}/{input_n})", True
+
+
+def _parse_lineup_players(lineup_key: str) -> set[int]:
+    out: set[int] = set()
+    for token in str(lineup_key or "").split("-"):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            out.add(int(token))
+        except ValueError:
+            continue
+    return out
+
+
+def _normalize_numbers(values: list[int]) -> list[int]:
+    cleaned = []
+    for v in values:
+        try:
+            n = int(v)
+        except Exception:
+            continue
+        if n > 0:
+            cleaned.append(n)
+    return sorted(set(cleaned))
+
+
+def _minimum_reasonable_overlap(input_n: int) -> int:
+    # Keep fallback practical for 3-5 selected players.
+    # 5 -> 3, 4 -> 2, 3 -> 2
+    if input_n >= 5:
+        return 3
+    if input_n == 4:
+        return 2
+    if input_n == 3:
+        return 2
+    return max(1, input_n)
 
 
 def get_available_players(match_id: int) -> dict:
@@ -119,15 +155,26 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
     match_name = selected_row.iloc[0]["match_name"] if not selected_row.empty else ""
     opponent_name = extract_opponent_from_match_name(match_name)
 
-    df = run_query(
-        RECO_SQL,
-        params=(
-            payload.opponent_players,
-            related_match_ids,
-            related_match_ids,
-            payload.available_today,
-            int(payload.min_seconds),
-        ),
+    selected_opp = _normalize_numbers(payload.opponent_players)
+    selected_available = _normalize_numbers(payload.available_today)
+    selected_opp_set = set(selected_opp)
+    selected_available_set = set(selected_available)
+    input_n = len(selected_opp)
+    min_overlap = _minimum_reasonable_overlap(input_n)
+
+    stints_df = run_query(
+        """
+        SELECT
+            a_lineup_key,
+            b_lineup_key,
+            time_played_seconds,
+            diff
+        FROM stints
+        WHERE match_id = ANY(%s::int[])
+          AND a_lineup_key IS NOT NULL
+          AND b_lineup_key IS NOT NULL
+        """,
+        params=(related_match_ids,),
     )
     sample_count = len(related_match_ids)
     previous_count = max(sample_count - 1, 0)
@@ -136,8 +183,19 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
     else:
         sample_context_message = "Based on 1 game vs this opponent (no previous meetings in database)."
 
-    if df.empty:
-        quality_label, used_fallback = _overlap_label(0, len(payload.opponent_players))
+    debug_info = {
+        "selected_opponent_numbers": selected_opp,
+        "selected_available_numbers": selected_available,
+        "input_n": input_n,
+        "min_overlap_threshold": min_overlap,
+        "best_matched_observed_opponent_lineup": None,
+        "computed_overlap_count": 0,
+        "top_observed_overlap_candidates": [],
+        "rejection_summary": {},
+    }
+
+    if stints_df.empty:
+        quality_label, used_fallback = _overlap_label(0, input_n)
         return LiveRecommendationOut(
             selected_match_id=payload.match_id,
             related_match_ids=related_match_ids,
@@ -145,41 +203,158 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
             previous_match_count=previous_count,
             sample_context_message=(
                 sample_context_message
-                + " No usable matchup found with at least 3 overlapping opponent players."
+                + " No stints data found in the selected sample."
             ),
             opponent_name=opponent_name,
             chosen_b_key="",
             overlap=0,
-            input_n=len(payload.opponent_players),
+            input_n=input_n,
             overlap_label=quality_label,
             used_fallback=used_fallback,
+            debug=debug_info,
             recommendations=[],
             not_recommended=None,
         )
 
-    chosen_bkey = str(df["b_key"].iloc[0])
-    overlap = int(df["chosen_overlap"].iloc[0])
-    input_n = int(df["input_n"].iloc[0])
+    b_group = (
+        stints_df.groupby("b_lineup_key", as_index=False)["time_played_seconds"]
+        .sum()
+        .rename(columns={"time_played_seconds": "seconds_total"})
+    )
+    b_group["players_set"] = b_group["b_lineup_key"].apply(_parse_lineup_players)
+    b_group["overlap"] = b_group["players_set"].apply(lambda s: len(s & selected_opp_set))
+
+    if not b_group.empty:
+        top_debug = b_group.sort_values(["overlap", "seconds_total"], ascending=[False, False]).head(8)
+        debug_info["top_observed_overlap_candidates"] = [
+            {
+                "b_key": str(r["b_lineup_key"]),
+                "overlap": int(r["overlap"]),
+                "seconds_total": int(r["seconds_total"]),
+            }
+            for _, r in top_debug.iterrows()
+        ]
+
+    b_valid = b_group[b_group["overlap"] >= min_overlap].copy()
+    rejected_by_overlap = max(len(b_group) - len(b_valid), 0)
+    debug_info["rejection_summary"]["below_overlap_threshold"] = int(rejected_by_overlap)
+
+    if b_valid.empty:
+        quality_label, used_fallback = _overlap_label(0, input_n)
+        return LiveRecommendationOut(
+            selected_match_id=payload.match_id,
+            related_match_ids=related_match_ids,
+            sample_match_count=sample_count,
+            previous_match_count=previous_count,
+            sample_context_message=(
+                sample_context_message
+                + f" No usable matchup found with at least {min_overlap} overlapping opponent players."
+            ),
+            opponent_name=opponent_name,
+            chosen_b_key="",
+            overlap=0,
+            input_n=input_n,
+            overlap_label=quality_label,
+            used_fallback=used_fallback,
+            debug=debug_info,
+            recommendations=[],
+            not_recommended=None,
+        )
+
+    best_b = b_valid.sort_values(["overlap", "seconds_total", "b_lineup_key"], ascending=[False, False, True]).iloc[0]
+    chosen_bkey = str(best_b["b_lineup_key"])
+    overlap = int(best_b["overlap"])
+    debug_info["best_matched_observed_opponent_lineup"] = chosen_bkey
+    debug_info["computed_overlap_count"] = overlap
+
+    chosen_rows = stints_df[stints_df["b_lineup_key"] == chosen_bkey].copy()
+    chosen_rows["a_players_set"] = chosen_rows["a_lineup_key"].apply(_parse_lineup_players)
+    chosen_rows["a_ok"] = chosen_rows["a_players_set"].apply(lambda s: s.issubset(selected_available_set))
+
+    rejected_by_availability = int((~chosen_rows["a_ok"]).sum())
+    debug_info["rejection_summary"]["contains_unavailable_players"] = rejected_by_availability
+
+    filtered_rows = chosen_rows[chosen_rows["a_ok"]].copy()
+    if filtered_rows.empty:
+        quality_label, used_fallback = _overlap_label(overlap, input_n)
+        return LiveRecommendationOut(
+            selected_match_id=payload.match_id,
+            related_match_ids=related_match_ids,
+            sample_match_count=sample_count,
+            previous_match_count=previous_count,
+            sample_context_message=(
+                sample_context_message
+                + " Found opponent matchup, but all candidate our lineups include unavailable players."
+            ),
+            opponent_name=opponent_name,
+            chosen_b_key=chosen_bkey,
+            overlap=overlap,
+            input_n=input_n,
+            overlap_label=quality_label,
+            used_fallback=used_fallback,
+            debug=debug_info,
+            recommendations=[],
+            not_recommended=None,
+        )
+
+    a_agg = (
+        filtered_rows.groupby("a_lineup_key", as_index=False)
+        .agg(total_seconds=("time_played_seconds", "sum"), total_diff=("diff", "sum"))
+    )
+    a_agg = a_agg[a_agg["total_seconds"] >= int(payload.min_seconds)].copy()
+    debug_info["rejection_summary"]["below_min_seconds"] = int(
+        filtered_rows["a_lineup_key"].nunique() - a_agg["a_lineup_key"].nunique()
+    )
+
+    if a_agg.empty:
+        quality_label, used_fallback = _overlap_label(overlap, input_n)
+        return LiveRecommendationOut(
+            selected_match_id=payload.match_id,
+            related_match_ids=related_match_ids,
+            sample_match_count=sample_count,
+            previous_match_count=previous_count,
+            sample_context_message=(
+                sample_context_message
+                + " Found opponent matchup, but no lineup met current min_seconds after filters."
+            ),
+            opponent_name=opponent_name,
+            chosen_b_key=chosen_bkey,
+            overlap=overlap,
+            input_n=input_n,
+            overlap_label=quality_label,
+            used_fallback=used_fallback,
+            debug=debug_info,
+            recommendations=[],
+            not_recommended=None,
+        )
+
+    a_agg["diff_per_min"] = a_agg.apply(
+        lambda r: (float(r["total_diff"]) / float(r["total_seconds"])) * 60.0 if float(r["total_seconds"]) > 0 else 0.0,
+        axis=1,
+    )
+    a_agg = a_agg.sort_values(["diff_per_min", "total_seconds", "a_lineup_key"], ascending=[False, False, True])
     quality_label, used_fallback = _overlap_label(overlap, input_n)
 
-    show = df[["flag", "a_key", "total_seconds", "total_diff", "diff_per_min"]].copy()
-    show["minutes"] = (show["total_seconds"] / 60).round(2)
-    show["a_key"] = show["a_key"].apply(lambda x: format_lineup(x, payload.display_mode))
-
     recommendations = []
-    not_recommended = None
-
-    for _, row in show.iterrows():
-        card = LineupCardOut(
-            lineup=str(row["a_key"]),
-            diff_total=float(row["total_diff"]),
-            diff_per_min=float(row["diff_per_min"]),
-            minutes=float(row["minutes"]),
+    for _, row in a_agg.head(3).iterrows():
+        recommendations.append(
+            LineupCardOut(
+                lineup=format_lineup(str(row["a_lineup_key"]), payload.display_mode),
+                diff_total=float(row["total_diff"]),
+                diff_per_min=float(row["diff_per_min"]),
+                minutes=float(row["total_seconds"]) / 60.0,
+            )
         )
-        if row["flag"] == "GREEN":
-            recommendations.append(card)
-        elif row["flag"] == "RED":
-            not_recommended = card
+
+    not_recommended = None
+    if not a_agg.empty:
+        worst = a_agg.sort_values(["diff_per_min", "total_seconds", "a_lineup_key"], ascending=[True, False, True]).iloc[0]
+        not_recommended = LineupCardOut(
+            lineup=format_lineup(str(worst["a_lineup_key"]), payload.display_mode),
+            diff_total=float(worst["total_diff"]),
+            diff_per_min=float(worst["diff_per_min"]),
+            minutes=float(worst["total_seconds"]) / 60.0,
+        )
 
     return LiveRecommendationOut(
         selected_match_id=payload.match_id,
@@ -193,6 +368,7 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
         input_n=input_n,
         overlap_label=quality_label,
         used_fallback=used_fallback,
+        debug=debug_info,
         recommendations=recommendations,
         not_recommended=not_recommended,
     )
