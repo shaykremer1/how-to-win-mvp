@@ -17,9 +17,9 @@ function formatPts(v) {
 
 export default function TeamInsightsPage() {
   const { selectedMatchId, selectedOpponent } = useMatchContext();
-  const [overallMinSeconds, setOverallMinSeconds] = useState(180);
-  const [opponentMinSeconds, setOpponentMinSeconds] = useState(120);
-  const [matchupMinSeconds, setMatchupMinSeconds] = useState(60);
+  const [overallMinSeconds, setOverallMinSeconds] = useState(0);
+  const [opponentMinSeconds, setOpponentMinSeconds] = useState(0);
+  const [matchupMinSeconds, setMatchupMinSeconds] = useState(0);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
