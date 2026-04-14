@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { API_BASE, fetchTeamInsights } from "../api";
 import DebugPanel from "../components/DebugPanel";
-import LineupCard from "../components/LineupCard";
 import { useMatchContext } from "../context/MatchContext";
 
 function minutesToClock(m) {
@@ -14,19 +13,6 @@ function minutesToClock(m) {
 function formatPts(v) {
   if (v == null) return "—";
   return Number(v).toFixed(0);
-}
-
-function MatchupCard({ title, item, tone }) {
-  return (
-    <div className={`card ${tone}`}>
-      <div className="card-title">{title}</div>
-      <div className="stats">Our: {item.our_lineup}</div>
-      <div className="stats">Opp: {item.opponent_lineup}</div>
-      <div className="stats">Diff: {Number(item.diff_total).toFixed(1)}</div>
-      <div className="stats">Diff/Min: {Number(item.diff_per_min).toFixed(2)}</div>
-      <div className="stats">Minutes: {Number(item.minutes).toFixed(2)}</div>
-    </div>
-  );
 }
 
 export default function TeamInsightsPage() {
@@ -169,10 +155,6 @@ export default function TeamInsightsPage() {
           { label: "API base", value: API_BASE },
           { label: "Selected opponent", value: selectedOpponent?.opponent_name || "none" },
           { label: "Sample games", value: selectedOpponent?.sample_match_count || 0 },
-          { label: "Best lineups", value: data?.best_overall_lineups?.length || 0 },
-          { label: "Toughest opponent lineups", value: data?.toughest_opponent_lineups?.length || 0 },
-          { label: "Strongest matchups", value: data?.strongest_matchups?.length || 0 },
-          { label: "Weakest matchups", value: data?.weakest_matchups?.length || 0 },
           { label: "Lineups (our)", value: data?.lineup_table_our?.length || 0 },
           { label: "Lineups (opp)", value: data?.lineup_table_opponent?.length || 0 },
           { label: "PBP for lineups", value: data?.lineup_table_pbp_available ? "yes" : "no" },
@@ -371,55 +353,6 @@ export default function TeamInsightsPage() {
           </div>
         ) : (
           <p className="empty">No lineup rows for this threshold — try lowering overall min seconds.</p>
-        )}
-      </section>
-
-      <section className="section">
-        <h2>✅ Best Overall Lineups</h2>
-        {Array.isArray(data?.best_overall_lineups) && data.best_overall_lineups.length ? (
-          data.best_overall_lineups.map((l, idx) => (
-            <LineupCard key={`${l.lineup}-${idx}`} item={l} tone="good" title={`Top ${idx + 1}`} />
-          ))
-        ) : (
-          <p className="empty">No overall lineup insights available.</p>
-        )}
-      </section>
-
-      <section className="section">
-        <h2>❌ Opponent Lineups Hurting Us Most</h2>
-        {Array.isArray(data?.toughest_opponent_lineups) && data.toughest_opponent_lineups.length ? (
-          data.toughest_opponent_lineups.map((l, idx) => (
-            <LineupCard
-              key={`${l.lineup}-${idx}`}
-              item={l}
-              tone={Number(l.diff_per_min) < 0 ? "bad" : "neutral"}
-              title={`Opponent ${idx + 1}`}
-            />
-          ))
-        ) : (
-          <p className="empty">No opponent lineup insights available.</p>
-        )}
-      </section>
-
-      <section className="section">
-        <h2>🔥 Strongest Matchups</h2>
-        {Array.isArray(data?.strongest_matchups) && data.strongest_matchups.length ? (
-          data.strongest_matchups.map((m, idx) => (
-            <MatchupCard key={`s-${idx}`} title={`Strong ${idx + 1}`} item={m} tone="good" />
-          ))
-        ) : (
-          <p className="empty">No strong matchup data available.</p>
-        )}
-      </section>
-
-      <section className="section">
-        <h2>⚠️ Weakest Matchups</h2>
-        {Array.isArray(data?.weakest_matchups) && data.weakest_matchups.length ? (
-          data.weakest_matchups.map((m, idx) => (
-            <MatchupCard key={`w-${idx}`} title={`Weak ${idx + 1}`} item={m} tone="bad" />
-          ))
-        ) : (
-          <p className="empty">No weak matchup data available.</p>
         )}
       </section>
     </>
