@@ -2,7 +2,7 @@ import re
 
 import pandas as pd
 from bs4 import BeautifulSoup
-from ingest_match import build_match_url, extract_match_metadata, fetch_url
+from backend.app.core.ibasketball import build_match_url, extract_match_metadata, fetch_url
 
 from backend.app.schemas.players import LeaderOut, PlayersAnalyticsOut
 from backend.app.services.common import OUR_TEAM_ALIASES, PLAYER_MAP, normalize_team_name
