@@ -58,6 +58,16 @@ def _minimum_reasonable_overlap(input_n: int) -> int:
     return max(1, input_n)
 
 
+def _availability_label(available_count: int) -> tuple[str, str]:
+    if available_count >= 5:
+        return "Fully available lineup (5/5)", "full_5_of_5"
+    if available_count == 4:
+        return "Closest playable lineup (4/5)", "fallback_4_of_5"
+    if available_count == 3:
+        return "Partial fallback lineup (3/5)", "fallback_3_of_5"
+    return f"Low-availability lineup ({available_count}/5)", "low_availability"
+
+
 def get_available_players(match_id: int) -> dict:
     matches_df = fetch_matches_for_dropdown()
     related_match_ids = get_related_match_ids(match_id, matches_df)
@@ -211,6 +221,10 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
             input_n=input_n,
             overlap_label=quality_label,
             used_fallback=used_fallback,
+            availability_label="No playable lineup",
+            availability_rule="none",
+            available_in_chosen_lineup=0,
+            unavailable_historical_players=[],
             debug=debug_info,
             recommendations=[],
             not_recommended=None,
@@ -256,6 +270,10 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
             input_n=input_n,
             overlap_label=quality_label,
             used_fallback=used_fallback,
+            availability_label="No playable lineup",
+            availability_rule="none",
+            available_in_chosen_lineup=0,
+            unavailable_historical_players=[],
             debug=debug_info,
             recommendations=[],
             not_recommended=None,
@@ -268,45 +286,36 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
     debug_info["computed_overlap_count"] = overlap
 
     chosen_rows = stints_df[stints_df["b_lineup_key"] == chosen_bkey].copy()
-    chosen_rows["a_players_set"] = chosen_rows["a_lineup_key"].apply(_parse_lineup_players)
-    chosen_rows["a_ok"] = chosen_rows["a_players_set"].apply(lambda s: s.issubset(selected_available_set))
-
-    rejected_by_availability = int((~chosen_rows["a_ok"]).sum())
-    debug_info["rejection_summary"]["contains_unavailable_players"] = rejected_by_availability
-
-    filtered_rows = chosen_rows[chosen_rows["a_ok"]].copy()
-    if filtered_rows.empty:
-        quality_label, used_fallback = _overlap_label(overlap, input_n)
-        return LiveRecommendationOut(
-            selected_match_id=payload.match_id,
-            related_match_ids=related_match_ids,
-            sample_match_count=sample_count,
-            previous_match_count=previous_count,
-            sample_context_message=(
-                sample_context_message
-                + " Found opponent matchup, but all candidate our lineups include unavailable players."
-            ),
-            opponent_name=opponent_name,
-            chosen_b_key=chosen_bkey,
-            overlap=overlap,
-            input_n=input_n,
-            overlap_label=quality_label,
-            used_fallback=used_fallback,
-            debug=debug_info,
-            recommendations=[],
-            not_recommended=None,
-        )
 
     a_agg = (
-        filtered_rows.groupby("a_lineup_key", as_index=False)
+        chosen_rows.groupby("a_lineup_key", as_index=False)
         .agg(total_seconds=("time_played_seconds", "sum"), total_diff=("diff", "sum"))
     )
     a_agg = a_agg[a_agg["total_seconds"] >= int(payload.min_seconds)].copy()
     debug_info["rejection_summary"]["below_min_seconds"] = int(
-        filtered_rows["a_lineup_key"].nunique() - a_agg["a_lineup_key"].nunique()
+        chosen_rows["a_lineup_key"].nunique() - a_agg["a_lineup_key"].nunique()
     )
 
-    if a_agg.empty:
+    if not a_agg.empty:
+        a_agg["players_set"] = a_agg["a_lineup_key"].apply(_parse_lineup_players)
+        a_agg["available_count"] = a_agg["players_set"].apply(lambda s: len(s & selected_available_set))
+        a_agg["unavailable_players"] = a_agg["players_set"].apply(lambda s: sorted(list(s - selected_available_set)))
+
+    # Availability fallback tiers: 5/5 -> 4/5 -> 3/5
+    tier_rows = a_agg[a_agg["available_count"] >= 5].copy() if not a_agg.empty else a_agg
+    selected_availability_tier = 5
+    if tier_rows.empty:
+        tier_rows = a_agg[a_agg["available_count"] >= 4].copy() if not a_agg.empty else a_agg
+        selected_availability_tier = 4
+    if tier_rows.empty:
+        tier_rows = a_agg[a_agg["available_count"] >= 3].copy() if not a_agg.empty else a_agg
+        selected_availability_tier = 3
+
+    debug_info["rejection_summary"]["below_availability_tier"] = int(
+        max(len(a_agg) - len(tier_rows), 0)
+    )
+
+    if a_agg.empty or tier_rows.empty:
         quality_label, used_fallback = _overlap_label(overlap, input_n)
         return LiveRecommendationOut(
             selected_match_id=payload.match_id,
@@ -315,7 +324,7 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
             previous_match_count=previous_count,
             sample_context_message=(
                 sample_context_message
-                + " Found opponent matchup, but no lineup met current min_seconds after filters."
+                + " Found opponent matchup, but no lineup met current filters and minimum availability (3/5)."
             ),
             opponent_name=opponent_name,
             chosen_b_key=chosen_bkey,
@@ -323,20 +332,31 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
             input_n=input_n,
             overlap_label=quality_label,
             used_fallback=used_fallback,
+            availability_label="No playable lineup",
+            availability_rule="none",
+            available_in_chosen_lineup=0,
+            unavailable_historical_players=[],
             debug=debug_info,
             recommendations=[],
             not_recommended=None,
         )
 
-    a_agg["diff_per_min"] = a_agg.apply(
+    tier_rows["diff_per_min"] = tier_rows.apply(
         lambda r: (float(r["total_diff"]) / float(r["total_seconds"])) * 60.0 if float(r["total_seconds"]) > 0 else 0.0,
         axis=1,
     )
-    a_agg = a_agg.sort_values(["diff_per_min", "total_seconds", "a_lineup_key"], ascending=[False, False, True])
+    tier_rows = tier_rows.sort_values(
+        ["diff_per_min", "total_seconds", "a_lineup_key"], ascending=[False, False, True]
+    )
     quality_label, used_fallback = _overlap_label(overlap, input_n)
+    availability_label, availability_rule = _availability_label(selected_availability_tier)
+    best_row = tier_rows.iloc[0]
+    unavailable_players = [int(x) for x in (best_row["unavailable_players"] or [])]
+    debug_info["selected_availability_tier"] = selected_availability_tier
+    debug_info["selected_unavailable_players"] = unavailable_players
 
     recommendations = []
-    for _, row in a_agg.head(3).iterrows():
+    for _, row in tier_rows.head(3).iterrows():
         recommendations.append(
             LineupCardOut(
                 lineup=format_lineup(str(row["a_lineup_key"]), payload.display_mode),
@@ -347,8 +367,8 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
         )
 
     not_recommended = None
-    if not a_agg.empty:
-        worst = a_agg.sort_values(["diff_per_min", "total_seconds", "a_lineup_key"], ascending=[True, False, True]).iloc[0]
+    if not tier_rows.empty:
+        worst = tier_rows.sort_values(["diff_per_min", "total_seconds", "a_lineup_key"], ascending=[True, False, True]).iloc[0]
         not_recommended = LineupCardOut(
             lineup=format_lineup(str(worst["a_lineup_key"]), payload.display_mode),
             diff_total=float(worst["total_diff"]),
@@ -368,6 +388,10 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
         input_n=input_n,
         overlap_label=quality_label,
         used_fallback=used_fallback,
+        availability_label=availability_label,
+        availability_rule=availability_rule,
+        available_in_chosen_lineup=selected_availability_tier,
+        unavailable_historical_players=unavailable_players,
         debug=debug_info,
         recommendations=recommendations,
         not_recommended=not_recommended,

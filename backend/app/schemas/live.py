@@ -23,6 +23,10 @@ class LiveRecommendationOut(BaseModel):
     input_n: int
     overlap_label: str | None = None
     used_fallback: bool = False
+    availability_label: str | None = None
+    availability_rule: str | None = None
+    available_in_chosen_lineup: int = 0
+    unavailable_historical_players: list[int] = []
     debug: dict | None = None
     recommendations: list[LineupCardOut]
     not_recommended: LineupCardOut | None = None

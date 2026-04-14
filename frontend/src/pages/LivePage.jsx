@@ -22,6 +22,13 @@ function normalizeLivePayload(raw) {
     opponent_name: raw.opponent_name || "",
     overlap_label: raw.overlap_label || "",
     used_fallback: Boolean(raw.used_fallback),
+    availability_label: raw.availability_label || "",
+    availability_rule: raw.availability_rule || "",
+    available_in_chosen_lineup: Number(raw.available_in_chosen_lineup || 0),
+    unavailable_historical_players: Array.isArray(raw.unavailable_historical_players)
+      ? raw.unavailable_historical_players
+      : [],
+    debug: raw.debug || null,
   };
 }
 
@@ -268,6 +275,15 @@ export default function LivePage() {
               {(result.sample_match_count || selectedOpponent?.sample_match_count || 0) === 1 ? "" : "s"} vs this
               opponent
             </p>
+            <p className="sample-basis">
+              Availability status: {result.availability_label || "-"}
+              {result.availability_rule && result.availability_rule !== "full_5_of_5" ? " (fallback used)" : ""}
+            </p>
+            {result.unavailable_historical_players?.length ? (
+              <div className="warn-text">
+                Historical lineup players unavailable now: {result.unavailable_historical_players.join(", ")}.
+              </div>
+            ) : null}
             {result.recommendations.length ? (
               result.recommendations.map((item, idx) => (
                 <LineupCard key={`${item.lineup}-${idx}`} item={item} tone="good" title={`Option ${idx + 1}`} />
@@ -304,9 +320,15 @@ export default function LivePage() {
               <div>
                 Overlap quality: {result.overlap_label || `${result.overlap}/${result.input_n}`}
               </div>
+              <div>Availability tier used: {result.available_in_chosen_lineup}/5</div>
               {result.used_fallback ? (
                 <div className="warn-text">
                   Recommendation uses closest observed opponent lineup fallback.
+                </div>
+              ) : null}
+              {result.availability_rule && result.availability_rule !== "full_5_of_5" ? (
+                <div className="warn-text">
+                  No fully available historical lineup; recommendation uses closest playable availability fallback.
                 </div>
               ) : null}
             </div>
