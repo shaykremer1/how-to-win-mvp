@@ -1,6 +1,12 @@
 from pydantic import BaseModel
 
 
+class OpponentSimpleOut(BaseModel):
+    opponent_name: str
+    match_id: int
+    match_date: str | None = None
+
+
 class OpponentHistoryRow(BaseModel):
     match_id: int
     match_date: str | None = None

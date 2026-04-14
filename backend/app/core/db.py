@@ -14,14 +14,11 @@ DEFAULTS = {
 }
 
 
-def _load_project_env_file() -> None:
-    """
-    Load C:/leumit/.env into process env (non-destructive).
-    """
+def _read_project_env_file() -> dict[str, str]:
+    out: dict[str, str] = {}
     root_env = Path(__file__).resolve().parents[3] / ".env"
     if not root_env.exists():
-        return
-
+        return out
     for raw in root_env.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -29,7 +26,20 @@ def _load_project_env_file() -> None:
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
+        if key:
+            out[key] = value
+    return out
+
+
+PROJECT_ENV = _read_project_env_file()
+
+
+def _load_project_env_file() -> None:
+    """
+    Load C:/leumit/.env into process env (non-destructive).
+    """
+    for key, value in PROJECT_ENV.items():
+        if key not in os.environ:
             os.environ[key] = value
 
 
@@ -37,12 +47,22 @@ _load_project_env_file()
 
 
 def _cfg() -> dict[str, str]:
+    is_render = str(os.getenv("RENDER", "")).lower() == "true"
+
+    def pick(key: str, default_key: str) -> str:
+        if is_render:
+            return os.getenv(key, DEFAULTS[default_key])
+        # Local-first behavior: prefer .env file values over global machine env.
+        if key in PROJECT_ENV and str(PROJECT_ENV[key]).strip() != "":
+            return PROJECT_ENV[key]
+        return os.getenv(key, DEFAULTS[default_key])
+
     return {
-        "host": os.getenv("DB_HOST", DEFAULTS["host"]),
-        "port": os.getenv("DB_PORT", DEFAULTS["port"]),
-        "dbname": os.getenv("DB_NAME", DEFAULTS["dbname"]),
-        "user": os.getenv("DB_USER", DEFAULTS["user"]),
-        "password": os.getenv("DB_PASSWORD", DEFAULTS["password"]),
+        "host": pick("DB_HOST", "host"),
+        "port": pick("DB_PORT", "port"),
+        "dbname": pick("DB_NAME", "dbname"),
+        "user": pick("DB_USER", "user"),
+        "password": pick("DB_PASSWORD", "password"),
     }
 
 

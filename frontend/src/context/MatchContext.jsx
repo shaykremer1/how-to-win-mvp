@@ -3,6 +3,59 @@ import { fetchOpponents } from "../api";
 
 const MatchContext = createContext(null);
 
+function groupSimpleOpponents(rows) {
+  const groups = new Map();
+  rows.forEach((r) => {
+    const oppName = String(r?.opponent_name || "").trim();
+    if (!oppName) return;
+    const mid = Number(r?.match_id);
+    if (!Number.isInteger(mid)) return;
+    const key = oppName.toLowerCase();
+    if (!groups.has(key)) {
+      groups.set(key, { opponent_key: key, opponent_name: oppName, history: [] });
+    }
+    groups.get(key).history.push({
+      match_id: mid,
+      match_date: r?.match_date || null,
+      match_name: null,
+      final_score: null,
+      point_diff: 0,
+      result: "N/A",
+    });
+  });
+
+  return [...groups.values()]
+    .map((g) => {
+      const history = [...g.history].sort((a, b) => {
+        const da = a.match_date || "";
+        const db = b.match_date || "";
+        if (da !== db) return da < db ? 1 : -1;
+        return Number(b.match_id) - Number(a.match_id);
+      });
+      return {
+        opponent_key: g.opponent_key,
+        opponent_name: g.opponent_name,
+        sample_match_count: history.length,
+        representative_match_id: history[0]?.match_id || 0,
+        history,
+      };
+    })
+    .sort((a, b) => a.opponent_name.localeCompare(b.opponent_name));
+}
+
+function normalizeOpponentsResponse(data) {
+  if (!Array.isArray(data)) return [];
+  if (data.length === 0) return [];
+  const first = data[0] || {};
+  if ("opponent_key" in first && "sample_match_count" in first) {
+    return data;
+  }
+  if ("opponent_name" in first && "match_id" in first) {
+    return groupSimpleOpponents(data);
+  }
+  return [];
+}
+
 export function MatchProvider({ children }) {
   const [opponents, setOpponents] = useState([]);
   const [selectedOpponentKey, setSelectedOpponentKey] = useState("");
@@ -13,16 +66,17 @@ export function MatchProvider({ children }) {
     setMatchesStatus("loading");
     fetchOpponents()
       .then((data) => {
-        if (!Array.isArray(data)) {
+        const normalized = normalizeOpponentsResponse(data);
+        if (!normalized.length && Array.isArray(data) && data.length > 0) {
           setOpponents([]);
           setMatchesStatus("unexpected");
           setMatchesError("Invalid opponents response format.");
           return;
         }
-        setOpponents(data);
+        setOpponents(normalized);
         setMatchesStatus("success");
-        if (data.length > 0) {
-          setSelectedOpponentKey(String(data[0].opponent_key));
+        if (normalized.length > 0) {
+          setSelectedOpponentKey(String(normalized[0].opponent_key));
         }
       })
       .catch((e) => {
