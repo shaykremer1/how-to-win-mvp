@@ -236,6 +236,7 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
     stints_df = run_query(
         """
         SELECT
+            match_id,
             a_lineup_key,
             b_lineup_key,
             time_played_seconds,
@@ -247,19 +248,32 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
         """,
         params=(related_match_ids,),
     )
-    sample_count = len(related_match_ids)
-    previous_count = max(sample_count - 1, 0)
+    sample_ids = [int(x) for x in related_match_ids]
+    sample_count = len(sample_ids)
+    previous_ids = [mid for mid in sample_ids if int(mid) != int(payload.match_id)]
+    previous_count = len(previous_ids)
     if previous_count > 0:
-        sample_context_message = f"Based on {previous_count} previous games vs this opponent (total sample: {sample_count})."
+        sample_context_message = (
+            f"Based on {sample_count} games in selected opponent sample. "
+            f"Previous meetings before selected game: {previous_count}."
+        )
     else:
-        sample_context_message = "Based on 1 game vs this opponent (no previous meetings in database)."
+        sample_context_message = (
+            f"Based on {sample_count} game in selected opponent sample. "
+            "No previous meetings before selected game."
+        )
 
     debug_info = {
         "selected_opponent_numbers": selected_opp,
         "selected_available_numbers": selected_available,
+        "related_match_ids_used": sample_ids,
+        "total_sample_game_ids": sample_ids,
+        "previous_meeting_ids_used": previous_ids,
         "input_n": input_n,
         "min_overlap_threshold": min_overlap,
         "best_matched_observed_opponent_lineup": None,
+        "matched_opponent_lineup_source_match_ids": [],
+        "candidate_our_lineup_source_match_ids": {},
         "computed_overlap_count": 0,
         "top_observed_overlap_candidates": [],
         "rejection_summary": {},
@@ -347,6 +361,9 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
     debug_info["computed_overlap_count"] = overlap
 
     chosen_rows = stints_df[stints_df["b_lineup_key"] == chosen_bkey].copy()
+    debug_info["matched_opponent_lineup_source_match_ids"] = sorted(
+        {int(x) for x in chosen_rows["match_id"].dropna().tolist()}
+    )
 
     a_agg = (
         chosen_rows.groupby("a_lineup_key", as_index=False)
@@ -362,6 +379,11 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
         a_agg["available_count"] = a_agg["players_set"].apply(lambda s: len(s & selected_available_set))
         a_agg["unavailable_players"] = a_agg["players_set"].apply(lambda s: sorted(list(s - selected_available_set)))
         a_agg["playable_full"] = a_agg["players_set"].apply(lambda s: s.issubset(selected_available_set))
+        a_agg["source_match_ids"] = a_agg["a_lineup_key"].apply(
+            lambda k: sorted(
+                {int(x) for x in chosen_rows[chosen_rows["a_lineup_key"] == k]["match_id"].dropna().tolist()}
+            )
+        )
 
     full_rows = a_agg[a_agg["playable_full"]].copy() if not a_agg.empty else a_agg
     fallback_rows = a_agg[a_agg["available_count"] >= 3].copy() if not a_agg.empty else a_agg
@@ -452,11 +474,17 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
             {
                 "historical_lineup": str(row["a_lineup_key"]),
                 "returned_lineup": out_key,
+                "returned_lineup_players": [int(x) for x in out_key.split("-") if x],
+                "source_match_ids": [int(x) for x in (row["source_match_ids"] or [])],
                 "unavailable_historical_players": [int(x) for x in row_unavail],
                 "replacements": replacements,
             }
         )
     debug_info["returned_lineups"] = returned_lineups_debug
+    debug_info["candidate_our_lineup_source_match_ids"] = {
+        str(row["a_lineup_key"]): [int(x) for x in (row["source_match_ids"] or [])]
+        for _, row in source_rows.iterrows()
+    }
 
     not_recommended = None
     if not source_rows.empty:

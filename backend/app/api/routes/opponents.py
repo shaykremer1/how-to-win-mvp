@@ -2,14 +2,14 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
-from backend.app.schemas.opponents import OpponentSimpleOut
+from backend.app.schemas.opponents import OpponentOptionOut
 from backend.app.services.opponents import list_opponents
 
 router = APIRouter(prefix="/opponents", tags=["opponents"])
 logger = logging.getLogger(__name__)
 
 
-@router.get("", response_model=list[OpponentSimpleOut])
+@router.get("", response_model=list[OpponentOptionOut])
 def opponents():
     try:
         return list_opponents()
