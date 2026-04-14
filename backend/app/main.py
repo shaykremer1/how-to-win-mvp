@@ -52,11 +52,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(health_router)
-app.include_router(matches_router)
-app.include_router(opponents_router)
-app.include_router(live_router)
-app.include_router(training_router)
-app.include_router(insights_router)
-app.include_router(admin_router)
-app.include_router(players_router)
+_ALL_ROUTERS = [
+    health_router,
+    matches_router,
+    opponents_router,
+    live_router,
+    training_router,
+    insights_router,
+    admin_router,
+    players_router,
+]
+
+# Canonical API shape
+for _r in _ALL_ROUTERS:
+    app.include_router(_r, prefix="/api")
+
+# Backward-compatible aliases (legacy/no-prefix calls)
+for _r in _ALL_ROUTERS:
+    app.include_router(_r)
