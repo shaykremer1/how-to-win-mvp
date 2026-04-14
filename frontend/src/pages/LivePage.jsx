@@ -20,6 +20,8 @@ function normalizeLivePayload(raw) {
     previous_match_count: Number(raw.previous_match_count || 0),
     sample_context_message: raw.sample_context_message || "",
     opponent_name: raw.opponent_name || "",
+    overlap_label: raw.overlap_label || "",
+    used_fallback: Boolean(raw.used_fallback),
   };
 }
 
@@ -300,11 +302,11 @@ export default function LivePage() {
               <div>{result.sample_context_message || "-"}</div>
               <div>Opponent lineup matched: {result.chosen_b_key || "-"}</div>
               <div>
-                Overlap quality: {result.overlap}/{result.input_n}
+                Overlap quality: {result.overlap_label || `${result.overlap}/${result.input_n}`}
               </div>
-              {result.input_n > 0 && result.overlap < result.input_n ? (
+              {result.used_fallback ? (
                 <div className="warn-text">
-                  לא נמצאה התאמה מלאה לחמישיית היריבה, ולכן ההמלצה מבוססת על ההרכב הדומה ביותר בדאטה.
+                  Recommendation uses closest observed opponent lineup fallback.
                 </div>
               ) : null}
             </div>

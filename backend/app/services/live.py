@@ -6,6 +6,22 @@ from backend.app.services.matches import fetch_matches_for_dropdown
 from backend.app.core.queries import RECO_SQL
 
 
+def _overlap_label(overlap: int, input_n: int) -> tuple[str, bool]:
+    overlap = int(overlap or 0)
+    input_n = int(input_n or 0)
+    if input_n <= 0:
+        return "No matchup quality available", False
+    if overlap <= 0:
+        return f"No reasonable matchup ({overlap}/{input_n})", False
+    if overlap >= input_n:
+        return f"Exact match ({overlap}/{input_n})", False
+    if input_n == 5 and overlap == 4:
+        return "Closest match (4/5)", True
+    if input_n == 5 and overlap == 3:
+        return "Closest match (3/5)", True
+    return f"Closest match ({overlap}/{input_n})", True
+
+
 def get_available_players(match_id: int) -> dict:
     matches_df = fetch_matches_for_dropdown()
     related_match_ids = get_related_match_ids(match_id, matches_df)
@@ -121,16 +137,22 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
         sample_context_message = "Based on 1 game vs this opponent (no previous meetings in database)."
 
     if df.empty:
+        quality_label, used_fallback = _overlap_label(0, len(payload.opponent_players))
         return LiveRecommendationOut(
             selected_match_id=payload.match_id,
             related_match_ids=related_match_ids,
             sample_match_count=sample_count,
             previous_match_count=previous_count,
-            sample_context_message=sample_context_message,
+            sample_context_message=(
+                sample_context_message
+                + " No usable matchup found with at least 3 overlapping opponent players."
+            ),
             opponent_name=opponent_name,
             chosen_b_key="",
             overlap=0,
             input_n=len(payload.opponent_players),
+            overlap_label=quality_label,
+            used_fallback=used_fallback,
             recommendations=[],
             not_recommended=None,
         )
@@ -138,6 +160,7 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
     chosen_bkey = str(df["b_key"].iloc[0])
     overlap = int(df["chosen_overlap"].iloc[0])
     input_n = int(df["input_n"].iloc[0])
+    quality_label, used_fallback = _overlap_label(overlap, input_n)
 
     show = df[["flag", "a_key", "total_seconds", "total_diff", "diff_per_min"]].copy()
     show["minutes"] = (show["total_seconds"] / 60).round(2)
@@ -168,6 +191,8 @@ def get_live_recommendation(payload: LiveRecommendationIn) -> LiveRecommendation
         chosen_b_key=chosen_bkey,
         overlap=overlap,
         input_n=input_n,
+        overlap_label=quality_label,
+        used_fallback=used_fallback,
         recommendations=recommendations,
         not_recommended=not_recommended,
     )

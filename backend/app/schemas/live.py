@@ -21,5 +21,7 @@ class LiveRecommendationOut(BaseModel):
     chosen_b_key: str
     overlap: int
     input_n: int
+    overlap_label: str | None = None
+    used_fallback: bool = False
     recommendations: list[LineupCardOut]
     not_recommended: LineupCardOut | None = None

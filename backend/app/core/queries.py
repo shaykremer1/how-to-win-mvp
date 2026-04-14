@@ -24,30 +24,26 @@ candidate_b AS (
       AND s.b_lineup_key IS NOT NULL
     GROUP BY s.b_lineup_key, ib.input_players
 ),
-best_b AS (
-    SELECT *
-    FROM candidate_b
-    ORDER BY chosen_overlap DESC, seconds_total DESC, b_key
-    LIMIT 1
-),
 filtered AS (
     SELECT
         s.a_lineup_key AS a_key,
         s.b_lineup_key AS b_key,
         SUM(s.time_played_seconds) AS total_seconds,
         SUM(s.diff) AS total_diff,
-        bb.chosen_overlap,
-        bb.input_n
+        cb.chosen_overlap,
+        cb.input_n,
+        cb.seconds_total AS b_seconds_total
     FROM stints s
-    JOIN best_b bb
-      ON s.b_lineup_key = bb.b_key
+    JOIN candidate_b cb
+      ON s.b_lineup_key = cb.b_key
     WHERE s.match_id = ANY(%s::int[])
+      AND cb.chosen_overlap >= LEAST(3, cb.input_n)
       AND NOT EXISTS (
           SELECT 1
           FROM unnest(string_to_array(s.a_lineup_key, '-')::int[]) AS a(player)
           WHERE NOT (a.player = ANY(%s::int[]))
       )
-    GROUP BY s.a_lineup_key, s.b_lineup_key, bb.chosen_overlap, bb.input_n
+    GROUP BY s.a_lineup_key, s.b_lineup_key, cb.chosen_overlap, cb.input_n, cb.seconds_total
     HAVING SUM(s.time_played_seconds) >= %s
 ),
 scored AS (
@@ -61,8 +57,25 @@ scored AS (
             ELSE 0
         END AS diff_per_min,
         chosen_overlap,
-        input_n
+        input_n,
+        b_seconds_total
     FROM filtered
+),
+b_candidates AS (
+    SELECT
+        b_key,
+        MAX(chosen_overlap) AS chosen_overlap,
+        MAX(input_n) AS input_n,
+        MAX(b_seconds_total) AS b_seconds_total,
+        SUM(total_seconds) AS responses_total_seconds
+    FROM scored
+    GROUP BY b_key
+),
+best_b AS (
+    SELECT *
+    FROM b_candidates
+    ORDER BY chosen_overlap DESC, b_seconds_total DESC, responses_total_seconds DESC, b_key
+    LIMIT 1
 ),
 ranked AS (
     SELECT
@@ -70,6 +83,8 @@ ranked AS (
         ROW_NUMBER() OVER (ORDER BY diff_per_min DESC, total_seconds DESC, a_key) AS rn_best,
         ROW_NUMBER() OVER (ORDER BY diff_per_min ASC, total_seconds DESC, a_key) AS rn_worst
     FROM scored s
+    JOIN best_b bb
+      ON s.b_key = bb.b_key
 ),
 final AS (
     SELECT 0 AS sort_key, 'GREEN'::text AS flag, *
